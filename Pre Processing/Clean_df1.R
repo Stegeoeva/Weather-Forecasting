@@ -1,0 +1,181 @@
+setwd('C:\\Users\\user\\Desktop\\IoTFeds\\WeatherData\\Pre Processing')
+WorkingEnviroment <- setwd('C:\\Users\\user\\Desktop\\IoTFeds\\WeatherData\\Pre Processing')
+library("rjson")
+library(readxl)
+library(corrplot)
+library(leaps)
+df <- read_excel("Paper_dataset.xlsx")
+names(df)
+df <- df[, !(names(df) %in% c("created_at", "updated_at", "id", "node", "battery_voltage","battery_level", "temperature_1","humidity_1","luminosity_1","co_1","pm2_5_1","co2_1","atmospheric_pressure_1"))]
+df <- df[, !(names(df) %in% c("dummy_time"  ,"temp_pred"  ,"hum_pred" ,"lum_pred","press_pred"))]
+View(df)        
+
+cols_to_convert <- setdiff(names(df), "dt")
+df[cols_to_convert] <- lapply(df[cols_to_convert], function(x) as.numeric(as.character(x)))
+#str(df)
+df$dt <- as.POSIXct(as.character(df$dt), format = "%Y-%m-%d %H:%M:%S")
+library(lubridate)
+library(dplyr)
+df <- df %>% mutate(dt = with_tz(as.POSIXct(dt, tz = "UTC"), tzone = "Europe/Athens"))
+
+#Create Date and Time columns
+df$Date <- as.Date(df$dt)
+df$Time <- format(df$dt, "%H:%M:%S")
+
+# Calculate the number of unique dates
+num_unique_dates <- length(unique(df$Date))
+num_unique_dates
+
+# Reset the row names to sequentially number them from 1
+rownames(df) <- NULL
+
+#Check for gaps
+df$dt <- as.POSIXct(df$dt)
+time_diffs <- diff(df$dt)
+time_diffs_mins <- as.numeric(time_diffs, units = "mins")
+threshold <- 35 
+# Identify gaps
+gaps <- which(time_diffs_mins > threshold)
+# Print the gaps
+if (length(gaps) > 0) {
+  for (i in gaps) {
+    cat("Gap between record",   i, "and",   i + 1, ":", time_diffs_mins[i], "minutes\n")
+  }
+} else {
+  cat("No significant gaps found.\n")
+}  
+# Identify the Missing Time Point
+missing_time1 <- as.POSIXct("2023-04-29 16:34:56")
+# Create a new row with NA for all columns
+missing_row1 <- df[1, ]
+missing_row1[] <- NA  # Set all values to NA
+missing_row1$dt <- missing_time1  # Set the datetime
+
+missing_time2 <- as.POSIXct("2023-04-30 17:06:45")
+# Create a new row with NA for all columns
+missing_row2 <- df[1, ]
+missing_row2[] <- NA  # Set all values to NA
+missing_row2$dt <- missing_time2  # Set the datetime
+
+missing_time3 <- as.POSIXct("2023-05-01 08:38:00")
+# Create a new row with NA for all columns
+missing_row3 <- df[1, ]
+missing_row3[] <- NA  # Set all values to NA
+missing_row3$dt <- missing_time3  # Set the datetime
+
+
+# Insert the row into the dataframe
+df <- rbind(df, missing_row1,missing_row2,missing_row3)
+df <- df[order(df$dt),]  # Reorder by date-time
+
+# Perform Linear Interpolation
+library(zoo)
+# Define columns to exclude from interpolation
+exclude_cols <- c("dt", "Date", "Time")
+# Apply linear interpolation to each column, excluding the specified ones
+df[, !names(df) %in% exclude_cols] <- lapply(df[, !names(df) %in% exclude_cols], function(x) {
+  if(sum(!is.na(x)) >= 2) {  # Check if there are at least two non-NA values
+    return(na.approx(x, na.rm = FALSE))
+  } else {
+    return(x)  # Return the column as-is if not enough non-NA values for interpolation
+  }
+})
+# Reset the row names to sequentially number them from 1
+rownames(df) <- NULL
+
+#Check for nar(rows)
+df$dt <- as.POSIXct(df$dt)
+time_diffs <- diff(df$dt)
+time_diffs_mins <- as.numeric(time_diffs, units = "mins")
+threshold <- 25 
+# Identify gaps
+narrows <- which(time_diffs_mins < threshold)
+
+# Print the nar(rows)
+if (length(narrows) > 0) {
+  for (i in narrows) {
+    cat("Nar(row) between record",  i, "and",  i + 1, ":", time_diffs_mins[i], "minutes\n")
+  }
+} else {
+  cat("No significant nar(rows) found.\n")
+}
+
+# Check for repeated values. Sensor issues?
+for(column_name in names(df)) {
+  # Calculate the counts of each unique value in the column
+  value_counts <- table(df[[column_name]])
+  # Find the values that are repeated more than 10 times
+  repeated_values <- value_counts[value_counts > 10]
+  # Check if there are any repeated values
+  if(length(repeated_values) > 0) {
+    cat("\nRepeated values in", column_name, ":\n")
+    print(repeated_values)
+  } else {
+    cat("\nNo repeated values found in", column_name, ".\n")
+  }
+}
+
+# Define reasonable ranges for each variable
+ranges <- list(
+  temperature = c(-10, 40),
+  humidity = c (0,100),
+  luminosity = c(0, 100000),
+  atmospheric_pressure = c(970, 1080),
+  co = c(0, 300),
+  co2 = c(0, 1500),
+  pm2_5 = c(0, 150)
+)
+# Check for out-of-range values in each column
+for (col in names(ranges)) {
+  out_of_range <- df[df[[col]] < ranges[[col]][1] | df[[col]] > ranges[[col]][2], ]
+  if (nrow(out_of_range) > 0) {
+    cat("Rows with out-of-range", col, "values:\n")
+    print(out_of_range)
+  } else {
+    cat("No out-of-range", col, "values found.\n")
+  }
+}
+
+
+# Time encoding
+df$sin_time_of_day <- sin(2 * pi * hour(df$dt) / 24)
+df$cos_time_of_day <- cos(2 * pi * hour(df$dt) / 24)
+
+# Day of year encoding
+day_of_year <- yday(df$dt)
+df$sin_day_of_year <- sin(2 * pi * day_of_year / 365)
+df$cos_day_of_year <- cos(2 * pi * day_of_year / 365)
+
+# Create new columns with default value 0
+df$Day <- 0
+df$Afternoon <- 0
+
+# Update the values based on the Time condition
+df$Day[format(df$dt, "%H:%M:%S") >= "06:00:00" & format(df$dt, "%H:%M:%S") < "14:00:00"] <- 1
+df$Afternoon[format(df$dt, "%H:%M:%S") >= "14:00:00" & format(df$dt, "%H:%M:%S") < "22:00:00"] <- 1
+
+# Dropping specified columns from the dataframe
+dataset <- df[, !(names(df) %in% c( "Date", "Time", "dry", "dt","rain_percentage", "wind_speed" ))]
+
+library(dplyr)
+dataset <- dataset %>%
+  mutate(across(everything(), lag, n = 2, .names = "{.col}_2"))
+
+dataset <- na.omit(dataset)
+rownames(dataset) <- NULL
+
+names(dataset)
+dataset <- dataset[, !(names(dataset) %in% c("Day","Afternoon" ))]
+dataset <- dataset[, !(names(dataset) %in% c("Day_2","Afternoon_2" ))]
+dataset <- dataset[, !(names(dataset) %in% c("cos_time_of_day","sin_day_of_year","cos_day_of_year" ))]
+dataset <- dataset[, !(names(dataset) %in% c("sin_time_of_day" ))]
+summary(dataset)
+View(dataset)
+
+library(openxlsx)
+write.xlsx(dataset, "MyData2.xlsx")
+#summary(dataset)
+
+
+
+
